@@ -1,0 +1,314 @@
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.linear_model import LogisticRegression # Simple and effective classifier
+from sklearn.metrics import classification_report, accuracy_score, confusion_matrix
+import numpy as np
+import re
+import random
+from collections import Counter
+
+# --- 1. Simulated Email Data Generation ---
+# In a real scenario, you'd ingest emails from an email gateway or a dataset.
+# For demonstration, we'll create synthetic data.
+
+def generate_email_data(num_legit=500, num_phish=100):
+    """
+    Generates a synthetic dataset of legitimate and phishing emails.
+    """
+    emails = []
+    labels = []
+
+    # Legitimate Emails
+    legit_subjects = [
+        "Meeting Reminder", "Project Update", "Weekly Newsletter", "Invoice Attached",
+        "Your Order Confirmation", "Regarding our call", "Important Announcement",
+        "Holiday Schedule", "Software Update Notification", "Team Sync Agenda"
+    ]
+    legit_bodies = [
+        "Hi team, just a reminder about our meeting tomorrow at 10 AM. Please review the attached document.",
+        "The project is progressing well. We've completed phase 1. Details in the report.",
+        "Welcome to our weekly newsletter! This week's topics include new features and upcoming events.",
+        "Please find your invoice for services rendered attached. Due by end of month.",
+        "Thank you for your recent purchase. Your order #12345 has been confirmed and will ship soon.",
+        "Following up on our discussion, I've prepared the analysis you requested.",
+        "This is an important announcement regarding our new company policy. Please read carefully.",
+        "Our office will be closed on [Date] for the holiday. Enjoy your time off!",
+        "A new software update is available for your application. Please install at your convenience.",
+        "Here is the agenda for our team sync. We will discuss Q3 goals and individual progress."
+    ]
+
+    for _ in range(num_legit):
+        subject = random.choice(legit_subjects)
+        body = random.choice(legit_bodies) + " Best regards, [Sender Name]."
+        emails.append(f"Subject: {subject}\n\n{body}")
+        labels.append("legitimate")
+
+    # Phishing Emails
+    phish_subjects = [
+        "Urgent: Your Account Has Been Suspended", "Security Alert: Unusual Login Activity",
+        "Action Required: Verify Your Payment Information", "Your Password Will Expire Soon",
+        "Invoice Overdue - Immediate Action Required", "Failed Delivery Attempt - Reschedule Now",
+        "You've Won a Prize!", "Important: Your Bank Account is Locked"
+    ]
+    phish_bodies = [
+        "Dear customer, your account has been compromised. Please click here to verify your details: hxxps://malicious-site[.]com/verify",
+        "We detected unusual login activity from a new device. Please click the link to secure your account: hxxps://phish-link[.]net/login",
+        "Your payment information is outdated. Update it immediately to avoid service interruption: hxxps://fake-billing[.]org/update",
+        "Your password will expire in 24 hours. Click this link to reset it: hxxps://reset-password[.]co/change",
+        "Your invoice #98765 is overdue. Please make payment here: hxxps://payment-portal[.]biz/pay",
+        "Your package delivery failed. Reschedule delivery now: hxxps://delivery-scam[.]xyz/track",
+        "Congratulations! You have been selected as a winner. Claim your prize here: hxxps://prize-scam[.]info/claim",
+        "Your bank account has been locked due to suspicious activity. Unlock it here: hxxps://bank-fraud[.]com/unlock"
+    ]
+    phish_keywords = ["urgent", "action required", "verify", "suspended", "security alert", "compromised", "payment", "overdue", "click here", "login", "account", "password", "bank"]
+    phish_url_patterns = ["hxxps://", "http://", "https://"] # Use hxxps for simulation, real links would be live
+    
+    for _ in range(num_phish):
+        subject = random.choice(phish_subjects)
+        body = random.choice(phish_bodies)
+        
+        # Inject more phishing characteristics
+        if random.random() < 0.7: # 70% chance to add a suspicious keyword
+            body += " " + random.choice(phish_keywords)
+        if random.random() < 0.8: # 80% chance to add a suspicious URL
+            body = body.replace("hxxps://", random.choice(phish_url_patterns))
+            
+        emails.append(f"Subject: {subject}\n\n{body}")
+        labels.append("phishing")
+
+    df = pd.DataFrame({'email_content': emails, 'label': labels})
+    return df
+
+# --- 2. Feature Engineering ---
+# Extracts features from email content.
+
+def extract_features(df):
+    """
+    Extracts various features from email content for classification.
+    """
+    # Feature 1: Textual features using TF-IDF (Term Frequency-Inverse Document Frequency)
+    # This captures the importance of words in the email content.
+    vectorizer = TfidfVectorizer(stop_words='english', max_features=1000) # Limit features for simplicity
+    tfidf_features = vectorizer.fit_transform(df['email_content'])
+    tfidf_df = pd.DataFrame(tfidf_features.toarray(), columns=vectorizer.get_feature_names_out()) # type: ignore
+
+    # Feature 2: Presence of suspicious keywords
+    suspicious_keywords = [
+        "urgent", "action required", "verify", "suspended", "security alert",
+        "compromised", "payment", "overdue", "click here", "login", "account",
+        "password", "bank", "invoice", "delivery failed", "prize", "locked"
+    ]
+    df['has_suspicious_keywords'] = df['email_content'].apply(
+        lambda x: 1 if any(keyword in x.lower() for keyword in suspicious_keywords) else 0
+    )
+
+    # Feature 3: Presence of URLs (simplified check)
+    df['has_url'] = df['email_content'].apply(
+        lambda x: 1 if re.search(r'https?://[^\s]+|hxxps?://[^\s]+', x) else 0
+    )
+    
+    # Feature 4: Number of URLs (count)
+    df['num_urls'] = df['email_content'].apply(
+        lambda x: len(re.findall(r'https?://[^\s]+|hxxps?://[^\s]+', x))
+    )
+
+    # Feature 5: Email length
+    df['email_length'] = df['email_content'].apply(len)
+
+    # Combine all features
+    features_df = pd.concat([
+        tfidf_df,
+        df[['has_suspicious_keywords', 'has_url', 'num_urls', 'email_length']]
+    ], axis=1)
+
+    return features_df, vectorizer # Return vectorizer to transform new data later
+
+# --- 3. Phishing Classification Model ---
+
+def train_classifier(X, y):
+    """
+    Trains a Logistic Regression classifier.
+    """
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+    
+    model = LogisticRegression(max_iter=1000, solver='liblinear', class_weight='balanced') # Use balanced for potential imbalance
+    model.fit(X_train, y_train)
+    
+    y_pred = model.predict(X_test)
+    
+    print("\n--- Model Evaluation ---")
+    print(f"Accuracy: {accuracy_score(y_test, y_pred):.4f}")
+    print("\nClassification Report:")
+    print(classification_report(y_test, y_pred))
+    print("\nConfusion Matrix:")
+    print(confusion_matrix(y_test, y_pred))
+    
+    return model
+
+# --- 4. Remediation Assistant ---
+
+def suggest_remediation(email_content, classification_result):
+    """
+    Suggests remediation actions based on the classification result.
+    """
+    print("\n--- Remediation Assistant ---")
+    if classification_result == "phishing":
+        print("🚨 **PHISHING EMAIL DETECTED!** 🚨")
+        print("\nRecommended Actions:")
+        print("1. **Quarantine Email:** Immediately move this email to a secure quarantine folder.")
+        print("2. **Alert User:** Inform the recipient about the phishing attempt and advise them not to click any links or provide credentials.")
+        print("3. **Block Sender:** Add the sender's email address/domain to a blacklist.")
+        print("4. **Analyze URLs/Attachments:** If present, extract and analyze any URLs or attachments in a sandboxed environment.")
+        print("5. **Update Threat Intelligence:** Add detected malicious indicators (URLs, IPs) to your threat intelligence platform.")
+        
+        # Mock LLM integration for more detailed explanation (requires actual LLM API)
+        # For this Canvas environment, direct external API calls are not allowed without an API key.
+        # This is a conceptual placeholder.
+        # try:
+        #     llm_explanation = mock_llm_explain_phishing(email_content)
+        #     print("\nAI Explanation (Mock LLM):")
+        #     print(llm_explanation)
+        # except Exception as e:
+        #     print(f"Could not get LLM explanation: {e}")
+
+    else:
+        print("✅ Email classified as **LEGITIMATE**. No immediate remediation required.")
+        print("  (Note: No system is 100% accurate. Continue to exercise caution.)")
+
+# Mock LLM function - replace with actual Gemini API call if API key is available
+# This function demonstrates how you *would* call an LLM.
+async def mock_llm_explain_phishing(email_text):
+    """
+    Mocks an LLM call to explain why an email is phishing.
+    In a real app, this would use a generative model like Gemini.
+    """
+    print("\n[Mock LLM Call]: Generating detailed explanation...")
+    # Simulate a call to Gemini API
+    # let chatHistory = [];
+    # chatHistory.push({ role: "user", parts: [{ text: `Explain why this email is a phishing attempt, focusing on common indicators: ${email_text}` }] });
+    # const payload = { contents: chatHistory };
+    # const apiKey = ""; // If you want to use models other than gemini-2.0-flash or imagen-3.0-generate-002, provide an API key here. Otherwise, leave this as-is.
+    # const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+    # const response = await fetch(apiUrl, {
+    #            method: 'POST',
+    #            headers: { 'Content-Type': 'application/json' },
+    #            body: JSON.stringify(payload)
+    #        });
+    # const result = response.json();
+    # if (result.candidates && result.candidates.length > 0 &&
+    #     result.candidates[0].content && result.candidates[0].content.parts &&
+    #     result.candidates[0].content.parts.length > 0) {
+    #   return result.candidates[0].content.parts[0].text;
+    # } else {
+    #   return "Could not generate explanation.";
+    # }
+
+    # For this simulation, return a canned response
+    return (
+        "This email exhibits classic phishing indicators:\n"
+        "- **Urgency/Threat:** Phrases like 'Urgent', 'Account Suspended', 'Action Required' create panic.\n"
+        "- **Suspicious Links:** The presence of a URL that doesn't match the expected legitimate domain (e.g., 'malicious-site.com' instead of 'yourbank.com').\n"
+        "- **Generic Salutation:** 'Dear customer' instead of your name suggests a bulk attack.\n"
+        "- **Request for Credentials/Personal Info:** Prompts you to 'verify details' or 'reset password' via a link."
+    )
+
+
+# --- Main Execution Flow ---
+if __name__ == "__main__":
+    print("--- Starting AI-Powered Phishing Email Classifier ---")
+    
+    # 1. Generate Data
+    print("\n[1/4] Generating simulated email data...")
+    df = generate_email_data(num_legit=1000, num_phish=200) # More legitimate emails
+    print(f"Generated {len(df)} emails ({Counter(df['label'])}).")
+    
+    # 2. Extract Features
+    print("\n[2/4] Extracting features from email content...")
+    X, vectorizer = extract_features(df)
+    y = df['label']
+    print(f"Extracted {X.shape[1]} features.")
+    
+    # 3. Train Classifier
+    print("\n[3/4] Training phishing classification model...")
+    model = train_classifier(X, y)
+    
+    # 4. Test with a new simulated email and get remediation suggestions
+    print("\n[4/4] Testing with new simulated emails...")
+
+    # Example 1: A clear phishing email
+    test_email_phish = """Subject: IMMEDIATE ACTION REQUIRED: Your Amazon Account Is On Hold
+    
+    Dear Customer,
+
+    We have detected unusual activity on your Amazon account. To avoid suspension and ensure your account security, please verify your information by clicking the link below:
+
+    hxxps://amazon-security-update[.]xyz/verify-account
+
+    Failure to do so within 24 hours will result in permanent account closure.
+
+    Thank you,
+    Amazon Security Team
+    """
+    
+    # Example 2: A clear legitimate email
+    test_email_legit = """Subject: Your Monthly Electricity Bill is Ready
+
+    Dear John Doe,
+
+    Your latest electricity bill from City Power is now available. You can view and pay your bill securely by logging into your account directly on our official website.
+
+    If you have any questions, please contact our customer support.
+
+    Sincerely,
+    City Power Billing
+    """
+
+    # Example 3: A slightly ambiguous email (could be phishing or legit depending on context)
+    test_email_ambiguous = """Subject: Your Package Delivery Update
+
+    Hello,
+
+    Your package with tracking number #XYZ789 is scheduled for delivery soon.
+    You can track its progress here: https://track.delivery-service.com/status?id=XYZ789
+
+    Thank you for your patience.
+    Delivery Service Team
+    """
+    
+    # Process and predict for test emails
+    test_emails = [test_email_phish, test_email_legit, test_email_ambiguous]
+    test_labels = ["phishing", "legitimate", "legitimate"] # Expected labels for these examples
+
+    for i, email_content in enumerate(test_emails):
+        print(f"\n\n--- Analyzing Test Email {i+1} ---")
+        print(f"Email Content:\n{email_content.splitlines()[0]}...") # Print subject line
+        
+        # Create a temporary DataFrame for the single email
+        single_email_df = pd.DataFrame({'email_content': [email_content]})
+        
+        # Extract features using the *same* vectorizer and logic as training
+        single_email_features, _ = extract_features(single_email_df)
+        
+        # Ensure the feature columns match the training data's columns
+        # This is crucial because TfidfVectorizer might produce different columns if not fitted on full data
+        # We need to reindex single_email_features to match X.columns
+        missing_cols = set(X.columns) - set(single_email_features.columns)
+        for c in missing_cols:
+            single_email_features[c] = 0 # Add missing TF-IDF columns as 0
+        single_email_features = single_email_features[X.columns] # Reorder columns to match training data
+
+        prediction = model.predict(single_email_features)[0]
+        
+        print(f"Predicted Classification: {prediction.upper()}")
+        print(f"Expected Classification: {test_labels[i].upper()}")
+        
+        suggest_remediation(email_content, prediction)
+
+    print("\n--- AI-Powered Phishing Email Classifier Simulation Complete ---")
+    print("This demonstrates a foundational system. Real-world systems would require:")
+    print("- Larger, diverse, and labeled datasets.")
+    print("- More sophisticated NLP techniques (e.g., deep learning, contextual embeddings).")
+    print("- Advanced URL analysis (e.g., domain age, WHOIS lookup, reputation scores).")
+    print("- Integration with real-time email gateways and security orchestration tools.")
+    print("- Continuous retraining and monitoring for new phishing tactics.")
