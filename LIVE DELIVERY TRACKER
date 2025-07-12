@@ -1,0 +1,218 @@
+import time
+import math
+import random
+from datetime import datetime, timedelta
+
+
+AVERAGE_SPEED_KMH = 30
+KM_PER_MINUTE = AVERAGE_SPEED_KMH / 60
+SIMULATION_INTERVAL_SECONDS = 5
+
+def haversine_distance(lat1, lon1, lat2, lon2):
+    """
+    Calculate the distance between two points on Earth using the Haversine formula.
+    Returns distance in kilometers.
+    """
+    R = 6371  
+
+    lat1_rad = math.radians(lat1)
+    lon1_rad = math.radians(lon1)
+    lat2_rad = math.radians(lat2)
+    lon2_rad = math.radians(lon2)
+
+    dlon = lon2_rad - lon1_rad
+    dlat = lat2_rad - lat1_rad
+
+    a = math.sin(dlat / 2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon / 2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    distance = R * c
+    return distance
+
+def generate_random_coords(center_lat, center_lon, radius_km):
+    """
+    Generates random coordinates within a given radius from a center point.
+    """
+    lat_deg_per_km = 1 / 111.0
+    lon_deg_per_km = 1 / (111.0 * math.cos(math.radians(center_lat)))
+
+    random_lat_offset = random.uniform(-radius_km, radius_km) * lat_deg_per_km
+    random_lon_offset = random.uniform(-radius_km, radius_km) * lon_deg_per_km
+
+    return center_lat + random_lat_offset, center_lon + random_lon_offset
+
+class DeliveryOrder:
+    def __init__(self, order_id, customer_name, items, start_location, end_location):
+        self.order_id = order_id
+        self.customer_name = customer_name
+        self.items = items
+        self.start_location = start_location  
+        self.current_location = list(start_location)
+        self.end_location = end_location      
+        self.status = "PENDING"              
+        self.driver = None                    
+        self.eta = None                       
+        self.last_update_time = datetime.now()
+        self.total_distance = haversine_distance(
+            start_location[0], start_location[1], end_location[0], end_location[1]
+        )
+        self.distance_traveled = 0.0
+
+    def assign_driver(self, driver_name):
+        """Assigns a driver to the order and updates status."""
+        self.driver = driver_name
+        self.status = "PICKED_UP"
+        print(f"Order {self.order_id}: Assigned to {self.driver}. Status: {self.status}")
+        self.update_eta() 
+
+    def update_location(self, new_lat, new_lon):
+        """Updates the current location of the delivery."""
+        old_lat, old_lon = self.current_location
+        self.current_location = [new_lat, new_lon]
+        
+        distance_moved_step = haversine_distance(old_lat, old_lon, new_lat, new_lon)
+        self.distance_traveled += distance_moved_step
+        
+        self.update_eta() 
+        self.last_update_time = datetime.now()
+
+    def update_eta(self):
+        """
+        [AI Component - Simplified ETA Prediction]
+        Predicts ETA based on remaining distance and average speed.
+        In a real AI system, this would involve:
+        - Machine learning model (e.g., regression) trained on historical data (traffic, time of day, weather).
+        - Real-time traffic API integration.
+        - Dynamic route optimization.
+        """
+        if self.status in ["PENDING", "CANCELED", "DELIVERED"]:
+            self.eta = None
+            return
+
+        remaining_distance = haversine_distance(
+            self.current_location[0], self.current_location[1],
+            self.end_location[0], self.end_location[1]
+        )
+
+        if remaining_distance <= 0.1: 
+            self.eta = datetime.now() #
+            self.status = "DELIVERED"
+            print(f"Order {self.order_id}: Status changed to DELIVERED!")
+            return
+
+        time_needed_minutes = remaining_distance / KM_PER_MINUTE
+        self.eta = datetime.now() + timedelta(minutes=time_needed_minutes)
+        self.status = "EN_ROUTE" 
+
+    def display_status(self):
+        """Prints the current status of the order."""
+        eta_str = self.eta.strftime("%H:%M:%S") if self.eta else "N/A"
+        
+        progress_percentage = 0
+        if self.total_distance > 0:
+            progress_percentage = (self.distance_traveled / self.total_distance) * 100
+            if progress_percentage > 100: 
+                progress_percentage = 100
+
+        print(f"--- Order ID: {self.order_id} ---")
+        print(f"  Customer: {self.customer_name}")
+        print(f"  Items: {', '.join(self.items)}")
+        print(f"  Driver: {self.driver if self.driver else 'Not assigned'}")
+        print(f"  Status: {self.status}")
+        print(f"  Current Location: Lat {self.current_location[0]:.4f}, Lon {self.current_location[1]:.4f}")
+        print(f"  Destination: Lat {self.end_location[0]:.4f}, Lon {self.end_location[1]:.4f}")
+        print(f"  Distance Traveled: {self.distance_traveled:.2f} km / {self.total_distance:.2f} km ({progress_percentage:.1f}% complete)")
+        print(f"  Estimated Time of Arrival (ETA): {eta_str}")
+        print("-" * 30)
+
+def simulate_delivery_movement(order: DeliveryOrder, time_step_minutes: float):
+    """
+    Simulates the movement of a delivery order towards its destination.
+    Updates the order's current_location based on a fixed speed.
+    """
+    if order.status != "EN_ROUTE":
+        return
+
+    current_lat, current_lon = order.current_location
+    end_lat, end_lon = order.end_location
+
+    remaining_distance = haversine_distance(current_lat, current_lon, end_lat, end_lon)
+
+    if remaining_distance <= 0.1: 
+        order.update_location(end_lat, end_lon) 
+        return
+
+    distance_to_move = KM_PER_MINUTE * time_step_minutes
+
+    if distance_to_move > remaining_distance:
+        distance_to_move = remaining_distance
+
+    fraction_of_path = distance_to_move / remaining_distance
+    
+    new_lat = current_lat + (end_lat - current_lat) * fraction_of_path
+    new_lon = current_lon + (end_lon - current_lon) * fraction_of_path
+
+    order.update_location(new_lat, new_lon)
+
+def main_simulation_loop():
+    """
+    Main loop to simulate multiple delivery orders.
+    """
+    print("--- Starting Live Delivery Tracker Simulation ---")
+    print("Press Ctrl+C to exit.")
+
+    central_lat, central_lon = 28.6139, 77.2090 
+
+    orders = []
+    orders.append(DeliveryOrder(
+        order_id="ORD001",
+        customer_name="SIDDHARTHA",
+        items=["Pizza", "Coke"],
+        start_location=generate_random_coords(central_lat, central_lon, 5), 
+        end_location=generate_random_coords(central_lat, central_lon, 15) 
+    ))
+    orders.append(DeliveryOrder(
+        order_id="ORD002",
+        customer_name="SHUBHAM",
+        items=["Groceries"],
+        start_location=generate_random_coords(central_lat, central_lon, 3),
+        end_location=generate_random_coords(central_lat, central_lon, 10)
+    ))
+    orders.append(DeliveryOrder(
+        order_id="ORD003",
+        customer_name="MBAPPE",
+        items=["Electronics"],
+        start_location=generate_random_coords(central_lat, central_lon, 8),
+        end_location=generate_random_coords(central_lat, central_lon, 20)
+    ))
+
+    orders[0].assign_driver("Driver Alex")
+    orders[1].assign_driver("Driver Ben")
+
+    simulation_time_minutes = SIMULATION_INTERVAL_SECONDS / 60.0
+
+    try:
+        while True:
+            print(f"\n{'='*10} Simulation Update: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} {'='*10}")
+            
+            for order in orders:
+                if order.status == "PICKED_UP" or order.status == "EN_ROUTE":
+                    simulate_delivery_movement(order, simulation_time_minutes)
+                
+                order.display_status()
+            
+            if datetime.now() - orders[0].last_update_time > timedelta(seconds=SIMULATION_INTERVAL_SECONDS * 5) and orders[2].status == "PENDING":
+                orders[2].assign_driver("Driver Chris")
+
+            time.sleep(SIMULATION_INTERVAL_SECONDS)
+
+    except KeyboardInterrupt:
+        print("\n--- Simulation Stopped by User ---")
+        print("Final status of active orders:")
+        for order in orders:
+            order.display_status()
+    except Exception as e:
+        print(f"\nAn unexpected error occurred: {e}")
+
+if __name__ == "__main__":
+    main_simulation_loop()
